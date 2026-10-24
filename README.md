@@ -40,7 +40,8 @@ may still need one.
 
 - Neovim 0.10+
 - Ghostty or Kitty for image icons; see [terminal support](#terminal-support)
-- ImageMagick (`magick`) for SVG themes, including Material
+- `rsvg-convert` for SVG themes, including Material, or ImageMagick (`magick`)
+  built with librsvg
 - `curl` and `tar` for installing Material Icon Theme
 - True color enabled: `vim.opt.termguicolors = true`
 

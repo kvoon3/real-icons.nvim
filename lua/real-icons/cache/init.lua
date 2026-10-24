@@ -69,6 +69,62 @@ local function be32(data, index)
   return a * 16777216 + b * 65536 + c * 256 + d
 end
 
+--[[ rsvg-convert is the preferred SVG renderer: it rasterises straight to the
+target size, and it keeps SVG packs working on machines whose ImageMagick was
+built without the library that renders SVG. ImageMagick's own SVG renderer
+rejects the compact arc syntax that most icon themes use, so without that
+delegate a large slice of a pack fails instead of degrading. ]]
+local function rsvg_available()
+  return vim.fn.executable("rsvg-convert") == 1
+end
+
+function M.converter()
+  if rsvg_available() then
+    return "rsvg-convert"
+  end
+  if vim.fn.executable("magick") == 1 then
+    return "magick"
+  end
+  return nil
+end
+
+--[[ Probing for the binary is not enough. An ImageMagick built without librsvg
+still has a magick on PATH: it silently falls back to its internal MSVG
+renderer, which rejects the arc-heavy path syntax icon themes emit, so only the
+icons that happen to avoid that syntax convert. Rendering one real SVG is the
+only way to tell a working converter from a half-working one. ]]
+local converter_probe
+local function converter_works()
+  if converter_probe ~= nil then
+    return converter_probe
+  end
+  if rsvg_available() then
+    converter_probe = true
+    return converter_probe
+  end
+  if vim.fn.executable("magick") ~= 1 then
+    converter_probe = false
+    return converter_probe
+  end
+
+  local probe_dir = path_util.join(path_util.cache_dir(), "probe")
+  path_util.ensure_dir(probe_dir)
+  local svg = path_util.join(probe_dir, "arc.svg")
+  local png = path_util.join(probe_dir, "arc.png")
+  vim.fn.delete(png)
+  vim.fn.writefile({
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">',
+    '<g fill="none" stroke-linecap="round"><path stroke="#cdd6f4" d="M10.5 7A1.5 1.5 0 019 8.5"/></g>',
+    "</svg>",
+  }, svg)
+  vim.fn.system({ "magick", svg, png })
+  converter_probe = vim.v.shell_error == 0 and png_signature(png)
+  vim.fn.delete(svg)
+  vim.fn.delete(png)
+  return converter_probe
+end
+M.converter_works = converter_works
+
 -- [[ Width and height from the IHDR chunk, or nil when the file is not a PNG.
 -- The chunk always comes first, so the 24-byte header is enough. ]]
 local function png_dimensions(path)
@@ -146,6 +202,18 @@ local function svg_dimensions(path)
 
   local width = values[3] and math.abs(values[3]) or nil
   local height = values[4] and math.abs(values[4]) or nil
+  -- A view box is what the drawing scales against; the width and height
+  -- attributes are only a fallback for sources that omit it, so that the rsvg
+  -- path can still fit them instead of stretching to the icon box.
+  if not width or not height then
+    local attributes = tag and tag:match("^<svg([^>]*)>") or ""
+    local function attribute(name)
+      local raw = attributes:match("%s" .. name .. '%s*=%s*"([^"]+)"')
+      return raw and tonumber(raw:match("^%s*([%d%.]+)")) or nil
+    end
+    width = width or attribute("width")
+    height = height or attribute("height")
+  end
   if width == 0 then
     width = nil
   end
@@ -397,7 +465,7 @@ local function rsvg_command(source, target, size, color)
   if size.trim then
     return nil
   end
-  if vim.fn.executable("rsvg-convert") ~= 1 then
+  if not rsvg_available() then
     return nil
   end
   if not path_util.ensure_dir(vim.fs.dirname(target)) then
@@ -405,12 +473,35 @@ local function rsvg_command(source, target, size, color)
   end
 
   local dimensions = M.dimensions(size)
+  local box_width, box_height = dimensions.width, dimensions.height
+  local render_width, render_height = box_width, box_height
+  local offset_x, offset_y = 0, 0
+  -- ImageMagick's resize fits the source inside the box and centres it, so a
+  -- view box that is not square has to shrink on its longer side first.
+  -- Rendering it straight into the box would stretch it instead.
+  local width, height = svg_dimensions(source)
+  if width and height and width > 0 and height > 0 then
+    local scale = math.min(box_width / width, box_height / height)
+    render_width = math.max(1, math.floor(width * scale + 0.5))
+    render_height = math.max(1, math.floor(height * scale + 0.5))
+    offset_x = math.floor((box_width - render_width) / 2)
+    offset_y = math.floor((box_height - render_height) / 2)
+  end
+
   return {
     "rsvg-convert",
     "--width",
-    tostring(dimensions.width),
+    tostring(render_width),
     "--height",
-    tostring(dimensions.height),
+    tostring(render_height),
+    "--page-width",
+    tostring(box_width),
+    "--page-height",
+    tostring(box_height),
+    "--top",
+    tostring(offset_y),
+    "--left",
+    tostring(offset_x),
     "--output",
     target,
     source,
@@ -490,8 +581,11 @@ local function prepare(icon, opts)
     return { path = target, command = rsvg }
   end
 
-  if vim.fn.executable("magick") ~= 1 then
-    return nil, "ImageMagick is required to convert icons"
+  if not converter_works() then
+    if rsvg_available() then
+      return nil, "ImageMagick is required to resize and recolour PNG icons"
+    end
+    return nil, "no working SVG renderer: install rsvg-convert, or ImageMagick built with librsvg"
   end
 
   local command, batch_arguments, command_err = conversion_command(source, target, size, color)

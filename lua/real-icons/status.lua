@@ -17,6 +17,7 @@ M.labels = {
 function M.snapshot()
   local icons = require("real-icons")
   local packs = require("real-icons.packs")
+  local cache = require("real-icons.cache")
   local capabilities = icons.capabilities()
   local selected = icons.pack()
   return {
@@ -25,9 +26,9 @@ function M.snapshot()
     active_pack = packs.get().name,
     pack_error = packs.last_error(selected),
     integrations = icons.integration_status(),
-    conversion = vim.fn.executable("magick") == 1,
+    conversion = cache.converter(),
     installing = packs.installing(),
-    cache = require("real-icons.cache").status(),
+    cache = cache.status(),
   }
 end
 
@@ -44,7 +45,7 @@ function M.report()
     "termguicolors: " .. tostring(vim.o.termguicolors),
     "Selected pack: " .. status.selected_pack,
     "Active pack: " .. status.active_pack,
-    "ImageMagick: " .. (status.conversion and "available" or "missing"),
+    "Converter: " .. (status.conversion or "missing"),
     string.format("Cache: %d pending, %d failed", status.cache.pending, status.cache.failed),
   }
   if caps.reason then

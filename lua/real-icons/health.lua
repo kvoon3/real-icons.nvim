@@ -163,10 +163,26 @@ function M.check()
     h.ok("Material icon pack installed")
   end
 
-  if vim.fn.executable("magick") == 1 then
+  -- Report what actually renders, not what happens to be on PATH: an
+  -- ImageMagick without an SVG delegate is present but converts only part of a
+  -- pack, which is worse than missing because it looks healthy.
+  local converter = cache.converter()
+  if converter == "rsvg-convert" then
+    h.ok("rsvg-convert available; SVG icon packs render at the target size")
+    if vim.fn.executable("magick") == 1 then
+      h.ok("ImageMagick available for padding, trim, and color transforms")
+    else
+      h.warn("ImageMagick missing; padding, trim, and color transforms are unavailable")
+    end
+  elseif converter == "magick" and cache.converter_works() then
     h.ok("ImageMagick available for icon conversion")
+  elseif converter == "magick" then
+    h.error("ImageMagick cannot render SVG: it was built without librsvg")
+    h.info("Its internal SVG renderer rejects the path syntax icon themes use, so icons fall back")
+    h.info("Install rsvg-convert, or ImageMagick built with librsvg")
   else
-    h.warn("ImageMagick is not available; SVG icon packs and color transforms cannot be rendered")
+    h.warn("No icon converter found; SVG icon packs and color transforms cannot be rendered")
+    h.info("Install rsvg-convert, or ImageMagick built with librsvg")
   end
 
   local writable, writable_err = cache_writable()

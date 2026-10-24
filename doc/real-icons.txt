@@ -29,8 +29,8 @@ REQUIREMENTS                                          *real-icons-requirements*
 - Neovim 0.10+
 - Ghostty or Kitty
 - termguicolors
-- ImageMagick for color transforms, padding, and trimming; SVG packs also
-  accept rsvg-convert
+- rsvg-convert for SVG packs, or ImageMagick built with librsvg
+- ImageMagick for color transforms, padding, and trimming
 - curl and tar for pack installation
 
 tmux requires passthrough:
@@ -136,8 +136,16 @@ pack that already ships small PNGs needs no ImageMagick.
 SVG sources are rendered by rsvg-convert when it is installed and the job
 needs no color transform, padding, or trimming. That renders straight to the
 target size instead of rasterising first and downsampling afterwards, which
-keeps thin strokes crisp. Anything rsvg-convert cannot express falls back to
-ImageMagick.
+keeps thin strokes crisp. Sources whose view box is not square are fitted and
+centred in the box the same way ImageMagick's resize does it. Anything
+rsvg-convert cannot express falls back to ImageMagick.
+
+ImageMagick only works as the SVG fallback when it was built with librsvg. On
+Homebrew that is imagemagick-full; the regular imagemagick formula is built
+without it, and its internal renderer rejects the compact arc syntax icon
+themes use, so most of a pack fails to convert. real-icons renders a sample SVG
+once to detect this and reports it in :checkhealth instead of assuming a magick
+on PATH can do the job.
 
 density = "auto" reads each SVG view box and chooses a suitable raster density
 with oversample headroom. Set density to a number such as 384 to force a fixed
@@ -628,14 +636,18 @@ All actions and arguments support command-line completion.
 ==============================================================================
 TROUBLESHOOTING                                    *real-icons-troubleshooting*
 
-Run :RealIcons health first. It checks terminal support, termguicolors,
-ImageMagick, tmux passthrough, the active icon pack, and enabled integration
+Run :RealIcons health first. It checks terminal support, termguicolors, the
+icon converter, tmux passthrough, the active icon pack, and enabled integration
 status. :RealIcons report collects a short text report for issue discussions.
 
 If icons do not appear:
 - Confirm you are running inside Ghostty or Kitty.
 - Confirm termguicolors is enabled.
 - Install the default pack with :RealIcons install.
+- Confirm :RealIcons health reports a working converter. Some icons appearing
+  while others stay glyphs means the converter fails per icon rather than
+  globally: ImageMagick without librsvg converts only the SVGs that avoid arc
+  path syntax. Install rsvg-convert and run :RealIcons clear-cache.
 - Run :RealIcons demo outside tmux, then inside tmux.
 - In tmux, confirm set -g allow-passthrough on is loaded.
 

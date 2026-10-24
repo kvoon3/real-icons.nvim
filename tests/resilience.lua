@@ -202,7 +202,13 @@ return function(test, eq, truth)
         return #jobs == 3
       end, 10))
       eq(cache.status().pending, 1, "old completions cannot remove a new job with the same key")
-      local target = jobs[3].command[#jobs[3].command]
+      local target
+      for _, argument in ipairs(jobs[3].command) do
+        if argument:match("%.tmp%.png$") then
+          target = argument
+        end
+      end
+      truth(target, "the command must write to a temporary file")
       truth(uv.fs_copyfile(require("real-icons.assets").file("filetypes", "lua"), target))
       jobs[3].callback({ code = 0 })
       truth(vim.wait(3000, function()

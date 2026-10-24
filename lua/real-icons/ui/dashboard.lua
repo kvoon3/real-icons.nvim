@@ -35,7 +35,7 @@ function M.open()
       notes[#notes + 1] = "Using built-in icons. " .. status.pack_error .. "."
     end
     if not status.conversion then
-      notes[#notes + 1] = "Install ImageMagick to use SVG themes."
+      notes[#notes + 1] = "Install rsvg-convert to use SVG themes."
     end
     if status.installing then
       notes[#notes + 1] = status.installing .. "..."

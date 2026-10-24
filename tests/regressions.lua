@@ -225,5 +225,62 @@ return function(test, eq, truth, with_modules)
 
       vim.fn.delete(root, "rf")
     end)
+
+    test("SVG sources keep their aspect ratio inside the icon box", function()
+      -- ImageMagick's resize fits the source inside the box and centres it. The
+      -- rsvg-convert path has to match that: rendering a 2:1 view box straight
+      -- into a square box would stretch it and misalign it against
+      -- ImageMagick-produced caches.
+      if vim.fn.executable("rsvg-convert") ~= 1 then
+        return
+      end
+
+      local root = vim.fn.tempname()
+      vim.fn.mkdir(root .. "/icons", "p")
+      vim.fn.writefile({
+        vim.json.encode({
+          iconDefinitions = { _file = { iconPath = "./icons/wide.svg" } },
+          file = "_file",
+          fileExtensions = { wide = "_file" },
+        }),
+      }, root .. "/theme.json")
+      vim.fn.writefile({
+        '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="16" viewBox="0 0 32 16">',
+        '<rect x="0" y="0" width="32" height="16" fill="#00ff00"/></svg>',
+      }, root .. "/icons/wide.svg")
+
+      icons.setup({
+        pack = "aspect-probe",
+        backend = "disabled",
+        packs = { ["aspect-probe"] = { type = "vscode", path = root, manifest = "theme.json" } },
+        size = { pixels = 48, trim = false },
+      })
+
+      local icon = icons.resolve("file", "x.wide", {})
+      local converted, err = cache.ensure(icon, { size = { pixels = 48, trim = false } })
+      truth(converted, err)
+
+      -- A 2:1 source in a 48px box occupies 48x24 centred at y = 12.
+      local box = vim.fn.system({ "magick", converted, "-format", "%@", "info:" })
+      eq(box, "48x24+0+12", "the source is fitted and centred, not stretched")
+
+      vim.fn.delete(root, "rf")
+    end)
+
+    test("a converter that cannot render SVG is reported, not treated as working", function()
+      -- An ImageMagick built without librsvg is on PATH but falls back to its
+      -- internal MSVG renderer, which rejects the arc syntax icon themes use.
+      -- Checking the binary alone marks the setup healthy while most of a pack
+      -- silently falls back to glyphs.
+      if vim.fn.executable("rsvg-convert") == 1 then
+        return
+      end
+      if vim.fn.executable("magick") ~= 1 then
+        return
+      end
+
+      eq(cache.converter(), "magick")
+      truth(cache.converter_works(), "this ImageMagick renders SVG and must be accepted")
+    end)
   end
 end
