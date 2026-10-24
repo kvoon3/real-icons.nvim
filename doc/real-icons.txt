@@ -29,7 +29,8 @@ REQUIREMENTS                                          *real-icons-requirements*
 - Neovim 0.10+
 - Ghostty or Kitty
 - termguicolors
-- ImageMagick for SVG icon packs and color transforms
+- ImageMagick for color transforms, padding, and trimming; SVG packs also
+  accept rsvg-convert
 - curl and tar for pack installation
 
 tmux requires passthrough:
@@ -124,6 +125,19 @@ backend = "disabled" forces glyph fallback.
 cols and rows reserve terminal cells. rows currently must be 1. pixels controls
 the generated PNG size. If a pack has too much transparent padding, set
 trim = true. If icons look too large after trimming, add padding.
+
+pixels should be close to the size the icon really occupies on screen, about
+cols times the terminal cell width in device pixels. A source PNG larger than
+that box is resized with Lanczos during the cache build, because handing the
+terminal an oversized image makes its GPU downsample with a coarse filter and
+thin strokes disappear. Sources at or below the box are used unchanged, so a
+pack that already ships small PNGs needs no ImageMagick.
+
+SVG sources are rendered by rsvg-convert when it is installed and the job
+needs no color transform, padding, or trimming. That renders straight to the
+target size instead of rasterising first and downsampling afterwards, which
+keeps thin strokes crisp. Anything rsvg-convert cannot express falls back to
+ImageMagick.
 
 density = "auto" reads each SVG view box and chooses a suitable raster density
 with oversample headroom. Set density to a number such as 384 to force a fixed
@@ -625,9 +639,12 @@ If icons do not appear:
 - Run :RealIcons demo outside tmux, then inside tmux.
 - In tmux, confirm set -g allow-passthrough on is loaded.
 
-If icons are blurry:
+If icons are blurry or look frayed:
 - Keep SVG packs as sources when possible.
-- Increase size.pixels.
+- Set size.pixels to the size the icon really occupies on screen, roughly
+  cols times the terminal cell width in device pixels. Too large is as bad as
+  too small: the terminal then downsamples with a coarse GPU filter and thin
+  strokes break up.
 - Use cols = 2 for one-row icons.
 
 Cache paths include size, density, padding, and color settings. Changing those

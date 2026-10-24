@@ -139,5 +139,91 @@ return function(test, eq, truth, with_modules)
       truth(done, error_message)
       truth(vim.uv.fs_stat(target).size > 8)
     end)
+
+    test("a PNG larger than the icon box is resized, a smaller one is reused", function()
+      -- Terminals downsample with a coarse GPU filter, so a source larger than
+      -- the configured box loses the thin strokes icon themes rely on. Anything
+      -- at or below the box is already fine and must not require ImageMagick.
+      local root = vim.fn.tempname()
+      vim.fn.mkdir(root .. "/icons", "p")
+      vim.fn.writefile({
+        vim.json.encode({
+          iconDefinitions = {
+            big = { iconPath = "./icons/big.png" },
+            small = { iconPath = "./icons/small.png" },
+          },
+          file = "small",
+          fileExtensions = { big = "big", small = "small" },
+        }),
+      }, root .. "/theme.json")
+
+      local function write_png(path, width, height)
+        local svg = string.format('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d"><rect width="%d" height="%d" fill="#89b4fa"/></svg>', width, height, width, height)
+        vim.fn.writefile({ svg }, path .. ".svg")
+        vim.fn.system({ "rsvg-convert", "--output", path, path .. ".svg" })
+        vim.fn.delete(path .. ".svg")
+      end
+
+      write_png(root .. "/icons/big.png", 128, 128)
+      write_png(root .. "/icons/small.png", 48, 48)
+
+      icons.setup({
+        pack = "png-size-" .. vim.fn.getpid(),
+        backend = "disabled",
+        packs = { ["png-size-" .. vim.fn.getpid()] = { type = "vscode", path = root, manifest = "theme.json" } },
+        size = { pixels = 48 },
+      })
+
+      local small = icons.resolve("file", "x.small", {})
+      local small_path = small.source or small.asset
+      eq(cache.ensure(small, { size = { pixels = 48 } }), small_path, "a fitting PNG is reused")
+
+      local big = icons.resolve("file", "x.big", {})
+      local big_path = big.source or big.asset
+      local resized = cache.ensure(big, { size = { pixels = 48 } })
+      truth(resized, "an oversized PNG must be converted")
+      truth(resized ~= big_path, "an oversized PNG must not be reused as-is")
+      eq(vim.fn.getfsize(resized) > 8, true, "the converted PNG exists")
+
+      vim.fn.delete(root, "rf")
+    end)
+
+    test("SVG sources convert through rsvg-convert when ImageMagick is absent", function()
+      -- rsvg-convert renders straight to the target size, which is sharper than
+      -- rasterising with ImageMagick and downsampling afterwards. It is also the
+      -- only converter available without ImageMagick installed.
+      if vim.fn.executable("rsvg-convert") ~= 1 then
+        return
+      end
+
+      local root = vim.fn.tempname()
+      vim.fn.mkdir(root .. "/icons", "p")
+      vim.fn.writefile({
+        vim.json.encode({
+          iconDefinitions = { _file = { iconPath = "./icons/lua.svg" } },
+          file = "_file",
+          fileExtensions = { lua = "_file" },
+        }),
+      }, root .. "/theme.json")
+      vim.fn.writefile({
+        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><circle cx="8" cy="8" r="6"/></svg>',
+      }, root .. "/icons/lua.svg")
+
+      icons.setup({
+        pack = "rsvg-probe",
+        backend = "disabled",
+        packs = { ["rsvg-probe"] = { type = "vscode", path = root, manifest = "theme.json" } },
+        size = { pixels = 48, trim = false },
+      })
+
+      local icon = icons.resolve("file", "x.lua", {})
+      truth((icon.source or icon.asset):match("%.svg$"), "the source is an SVG")
+      local converted, err = cache.ensure(icon, { size = { pixels = 48, trim = false } })
+      truth(converted, err or "SVG conversion must succeed without ImageMagick")
+      truth(converted ~= (icon.source or icon.asset), "the SVG is converted, not reused")
+      truth(vim.fn.getfsize(converted) > 8, "the converted PNG exists")
+
+      vim.fn.delete(root, "rf")
+    end)
   end
 end

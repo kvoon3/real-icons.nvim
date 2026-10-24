@@ -61,6 +61,34 @@ local function png_signature(path)
   return data == "\137PNG\r\n\026\n"
 end
 
+local function be32(data, index)
+  local a, b, c, d = data:byte(index, index + 3)
+  if not d then
+    return nil
+  end
+  return a * 16777216 + b * 65536 + c * 256 + d
+end
+
+-- [[ Width and height from the IHDR chunk, or nil when the file is not a PNG.
+-- The chunk always comes first, so the 24-byte header is enough. ]]
+local function png_dimensions(path)
+  local fd = uv.fs_open(path, "r", 438)
+  if not fd then
+    return nil
+  end
+  local data = uv.fs_read(fd, 24, 0)
+  uv.fs_close(fd)
+  if not data or data:sub(1, 8) ~= "\137PNG\r\n\026\n" or data:sub(13, 16) ~= "IHDR" then
+    return nil
+  end
+  local width = be32(data, 17)
+  local height = be32(data, 21)
+  if not width or not height then
+    return nil
+  end
+  return width, height
+end
+
 function M.root()
   return path_util.join(path_util.cache_dir(), "packs")
 end
@@ -352,6 +380,43 @@ local function conversion_command(source, target, size, color)
   return command, batch_arguments
 end
 
+--[[ rsvg-convert renders an SVG straight to the target size, which is sharper than
+letting ImageMagick rasterise it first and downsample afterwards. It only covers
+the plain case: no padding, trim, or colour transform. Returns nil when the job
+needs one of those or when rsvg-convert is unavailable. ]]
+local function rsvg_command(source, target, size, color)
+  if not source:lower():match("%.svg$") then
+    return nil
+  end
+  if M.has_color_transform(color) then
+    return nil
+  end
+  if (tonumber(size.padding) or 0) ~= 0 then
+    return nil
+  end
+  if size.trim then
+    return nil
+  end
+  if vim.fn.executable("rsvg-convert") ~= 1 then
+    return nil
+  end
+  if not path_util.ensure_dir(vim.fs.dirname(target)) then
+    return nil
+  end
+
+  local dimensions = M.dimensions(size)
+  return {
+    "rsvg-convert",
+    "--width",
+    tostring(dimensions.width),
+    "--height",
+    tostring(dimensions.height),
+    "--output",
+    target,
+    source,
+  }
+end
+
 local function run_conversion(command)
   local output = vim.fn.system(command)
   if vim.v.shell_error ~= 0 then
@@ -379,6 +444,12 @@ local function prepare(icon, opts)
     color = config.options.color
   end
   local color_transform = M.has_color_transform(color)
+  -- A PNG that needs no work is reused unchanged. That is safe while it is not
+  -- larger than the configured box: a bigger source is downsampled by the
+  -- terminal's GPU filter, which erases the thin strokes icon themes use, so
+  -- those fall through to ImageMagick's Lanczos resize. A smaller source is
+  -- left alone because upscaling costs detail nothing and avoids requiring
+  -- ImageMagick just to bloat the bundled assets.
   if
     ext == "png"
     and png_signature(source)
@@ -386,7 +457,11 @@ local function prepare(icon, opts)
     and not size.trim
     and (tonumber(size.padding) or 0) == 0
   then
-    return { path = source }
+    local dimensions = M.dimensions(size)
+    local width, height = png_dimensions(source)
+    if width and height and width <= dimensions.width and height <= dimensions.height then
+      return { path = source }
+    end
   end
 
   if not supported_formats[ext] then
@@ -405,6 +480,14 @@ local function prepare(icon, opts)
     and png_signature(target)
   then
     return { path = target }
+  end
+
+  -- rsvg-convert renders SVG straight to the target size, so prefer it when it
+  -- can do the whole job. ImageMagick stays the fallback and the only option for
+  -- colour transforms, padding, trimming, and raster sources.
+  local rsvg = rsvg_command(source, target, size, color)
+  if rsvg then
+    return { path = target, command = rsvg }
   end
 
   if vim.fn.executable("magick") ~= 1 then
@@ -515,8 +598,14 @@ function M.ensure_async(icon, opts, callback)
     task = prepared
     task.callbacks = {}
     task.temporary = task.path .. "." .. vim.fn.getpid() .. "-" .. serial .. ".tmp.png"
+    -- Redirect only the output argument: ImageMagick writes the target last,
+    -- rsvg-convert takes it after --output.
     task.command = vim.deepcopy(task.command)
-    task.command[#task.command] = task.temporary
+    for index, argument in ipairs(task.command) do
+      if argument == task.path then
+        task.command[index] = task.temporary
+      end
+    end
     pending[task.path] = task
     queue[#queue + 1] = task
   end
@@ -630,9 +719,16 @@ function M.ensure_many(icons, opts)
     local last = math.min(first + wave_size - 1, #tasks)
     local groups = {}
     for index = first, last do
-      local group_index = ((index - first) % jobs) + 1
-      groups[group_index] = groups[group_index] or {}
-      groups[group_index][#groups[group_index] + 1] = tasks[index]
+      local task = tasks[index]
+      -- rsvg-convert writes one file per invocation and has no batch form, so
+      -- those tasks skip the shared ImageMagick command below.
+      if not task.batch_arguments then
+        run_individually({ task })
+      else
+        local group_index = ((index - first) % jobs) + 1
+        groups[group_index] = groups[group_index] or {}
+        groups[group_index][#groups[group_index] + 1] = task
+      end
     end
 
     local running = {}
